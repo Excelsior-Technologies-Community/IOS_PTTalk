@@ -64,21 +64,18 @@ final class CallManager: NSObject,
         }
     }
 
-    // MARK: - Push To Talk
     func startTalking() {
-        guard !audioEngine.isRunning else { return }
-        isTransmitting = true
-        try? audioEngine.start()
-        playerNode.play()
         print("🎙️ START TALKING")
+        isTransmitting = true
     }
 
     func stopTalking() {
-        isTransmitting = false
         print("🔇 STOP TALKING")
+        isTransmitting = false
     }
 
     private func sendAudioBuffer(_ buffer: AVAudioPCMBuffer) {
+        guard isConnected else { return }
         guard session.connectedPeers.count > 0 else { return }
 
         let audioBuffer = buffer.audioBufferList.pointee.mBuffers
@@ -160,6 +157,12 @@ final class CallManager: NSObject,
                 self.isConnected = true
                 self.peerName = peerID.displayName
 
+                // 🔑 START AUDIO ENGINE ONCE
+                if !self.audioEngine.isRunning {
+                    try? self.audioEngine.start()
+                    self.playerNode.play()
+                    print("🎧 Audio Engine Running")
+                }
             case .notConnected:
                 print("❌ DISCONNECTED from \(peerID.displayName)")
                 self.isConnected = false

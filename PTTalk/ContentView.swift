@@ -44,11 +44,21 @@ struct ContentView: View {
                     callManager.startTalking()
                 } label: {
                     Text("🎙️ Hold to Talk")
+                        .font(.headline)
                         .padding()
                         .frame(maxWidth: .infinity)
                         .background(Color.blue)
                         .foregroundColor(.white)
-                        .cornerRadius(12)
+                        .cornerRadius(14)
+                        .gesture(
+                            DragGesture(minimumDistance: 0)
+                                .onChanged { _ in
+                                    callManager.startTalking()
+                                }
+                                .onEnded { _ in
+                                    callManager.stopTalking()
+                                }
+                        )
                 }
                 .simultaneousGesture(
                     DragGesture(minimumDistance: 0)
