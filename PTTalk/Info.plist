@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+
+    <key>NSLocalNetworkUsageDescription</key>
+    <string>PTTalk uses the local network to discover and connect nearby devices.</string>
+
+    <key>NSBonjourServices</key>
+    <array>
+        <string>_pttalk._tcp</string>
+    </array>
+    <key>NSBluetoothAlwaysUsageDescription</key>
+    <string>PTTalk uses Bluetooth to discover nearby devices.</string>
+
+    <key>NSMicrophoneUsageDescription</key>
+    <string>PTTalk needs microphone access for voice communication.</string>
+
+</dict>
+</plist>

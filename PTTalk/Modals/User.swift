@@ -11,6 +11,7 @@ struct User {
     let name: String
     let code: String
 }
+
 struct Session {
     let connectedUserName: String
     var isActive: Bool
