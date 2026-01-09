@@ -28,7 +28,7 @@ final class CallManager: NSObject,
     // MARK: - Audio
     private let audioEngine = AVAudioEngine()
     private let playerNode = AVAudioPlayerNode()
-    private var isTransmitting = false
+    @Published var isTransmitting: Bool = false
 
     // MARK: - Init
     override init() {
@@ -38,15 +38,30 @@ final class CallManager: NSObject,
         print("🚀 CallManager initialized")
     }
 
-    // MARK: - Audio Setup (Push-to-Talk)
     private func setupAudio() {
         let audioSession = AVAudioSession.sharedInstance()
-        try? audioSession.setCategory(
-            .playAndRecord,
-            mode: .voiceChat,
-            options: [.defaultToSpeaker, .allowBluetooth]
-        )
-        try? audioSession.setActive(true)
+
+        do {
+            try audioSession.setCategory(
+                .playAndRecord,
+                mode: .voiceChat,
+                options: [
+                    .allowBluetooth,
+                    .allowBluetoothA2DP,
+                    .defaultToSpeaker
+                ]
+            )
+
+            try audioSession.setActive(true)
+
+            // 🔊 FORCE LOUDSPEAKER
+            try audioSession.overrideOutputAudioPort(.speaker)
+
+            print("🔊 Audio routed to LOUDSPEAKER")
+
+        } catch {
+            print("❌ Audio session error: \(error)")
+        }
 
         audioEngine.attach(playerNode)
 
