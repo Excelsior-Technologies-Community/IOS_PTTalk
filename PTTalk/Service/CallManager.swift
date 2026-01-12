@@ -2,66 +2,136 @@ import Foundation
 import MultipeerConnectivity
 import AVFoundation
 
-final class CallManager: NSObject,
-                         ObservableObject,
-                         MCSessionDelegate,
-                         MCNearbyServiceAdvertiserDelegate,
-                         MCNearbyServiceBrowserDelegate {
+final class CallManager: NSObject, ObservableObject {
 
-    // MARK: - UI State
-    @Published var isConnected = false
-    @Published var peerName: String?
+    // MARK: - Published UI State
 
     @Published var nearbyPeers: [MCPeerID] = []
-
-    @Published var hasIncomingCall = false
+    @Published var isConnected: Bool = false
+    @Published var peerName: String?
+    @Published var hasIncomingCall: Bool = false
     @Published var incomingPeerName: String?
+    @Published var isTransmitting: Bool = false
 
-    // MARK: - Multipeer
+    // MARK: - Multipeer Properties
+
+    private let serviceType = "pttalk"
     private let myPeerID = MCPeerID(displayName: UIDevice.current.name)
+
     private var session: MCSession!
     private var advertiser: MCNearbyServiceAdvertiser!
     private var browser: MCNearbyServiceBrowser!
 
-    private var pendingInvitationHandler: ((Bool, MCSession?) -> Void)?
+    private var invitationHandler: ((Bool, MCSession?) -> Void)?
 
-    // MARK: - Audio
+    // MARK: - Audio Properties
+
     private let audioEngine = AVAudioEngine()
     private let playerNode = AVAudioPlayerNode()
-    @Published var isTransmitting: Bool = false
 
     // MARK: - Init
+
     override init() {
         super.init()
-        setupAudio()
-        setupMultipeer()
+        setupSession()
+        setupAdvertiser()
+        setupBrowser()
+        startServices()
+        setupAudioEngine()
         print("🚀 CallManager initialized")
     }
 
-    private func setupAudio() {
-        let audioSession = AVAudioSession.sharedInstance()
+    // MARK: - Setup Multipeer
+
+    private func setupSession() {
+        session = MCSession(
+            peer: myPeerID,
+            securityIdentity: nil,
+            encryptionPreference: .required
+        )
+        session.delegate = self
+    }
+
+    private func setupAdvertiser() {
+        advertiser = MCNearbyServiceAdvertiser(
+            peer: myPeerID,
+            discoveryInfo: nil,
+            serviceType: serviceType
+        )
+        advertiser.delegate = self
+    }
+
+    private func setupBrowser() {
+        browser = MCNearbyServiceBrowser(
+            peer: myPeerID,
+            serviceType: serviceType
+        )
+        browser.delegate = self
+    }
+
+    private func startServices() {
+        advertiser.startAdvertisingPeer()
+        browser.startBrowsingForPeers()
+        print("📡 Advertising & browsing started")
+    }
+
+    // MARK: - Call Control
+
+    func callPeer(_ peer: MCPeerID) {
+        print("📤 Calling \(peer.displayName)")
+        browser.invitePeer(peer, to: session, withContext: nil, timeout: 30)
+    }
+
+    func acceptCall() {
+        print("✅ Call accepted")
+        hasIncomingCall = false
+        invitationHandler?(true, session)
+        invitationHandler = nil
+    }
+
+    func rejectCall() {
+        print("❌ Call rejected")
+        hasIncomingCall = false
+        invitationHandler?(false, nil)
+        invitationHandler = nil
+    }
+
+    func endCall() {
+        print("🔴 Ending call")
+        session.disconnect()
+        isConnected = false
+        peerName = nil
+        stopTalking()
+    }
+
+    // MARK: - Audio Setup
+
+    private func setupAudioSession() {
+        let session = AVAudioSession.sharedInstance()
 
         do {
-            try audioSession.setCategory(
+            try session.setCategory(
                 .playAndRecord,
                 mode: .voiceChat,
                 options: [
                     .allowBluetooth,
-                    .allowBluetoothA2DP,
-                    .defaultToSpeaker
+                    .allowBluetoothA2DP
                 ]
             )
 
-            try audioSession.setActive(true)
+            try session.setActive(true)
 
-            // 🔊 FORCE LOUDSPEAKER
-            try audioSession.overrideOutputAudioPort(.speaker)
-
-            print("🔊 Audio routed to LOUDSPEAKER")
+            // 🔥 FORCE BOTTOM LOUDSPEAKER
+            try session.overrideOutputAudioPort(.speaker)
+            print("🔊 Audio routed to bottom loudspeaker")
 
         } catch {
-            print("❌ Audio session error: \(error)")
+            print("❌ Audio session error:", error)
         }
+    }
+
+    private func setupAudioEngine() {
+        setupAudioSession()
 
         audioEngine.attach(playerNode)
 
@@ -77,111 +147,102 @@ final class CallManager: NSObject,
                 self.sendAudioBuffer(buffer)
             }
         }
+
+        do {
+            try audioEngine.start()
+            print("🎧 Audio Engine Running")
+        } catch {
+            print("❌ Audio Engine error:", error)
+        }
     }
 
+    // MARK: - Push to Talk
+
     func startTalking() {
-        print("🎙️ START TALKING")
         isTransmitting = true
+        forceSpeaker()
+        print("🎙️ START TALKING")
     }
 
     func stopTalking() {
-        print("🔇 STOP TALKING")
         isTransmitting = false
+        print("🔇 STOP TALKING")
     }
+
+    private func forceSpeaker() {
+        do {
+            try AVAudioSession.sharedInstance()
+                .overrideOutputAudioPort(.speaker)
+            print("🔊 Speaker forced")
+        } catch {
+            print("❌ Speaker override failed")
+        }
+    }
+
+    // MARK: - Audio Send / Receive
 
     private func sendAudioBuffer(_ buffer: AVAudioPCMBuffer) {
-        guard isConnected else { return }
-        guard session.connectedPeers.count > 0 else { return }
+        guard let channelData = buffer.floatChannelData else { return }
 
-        let audioBuffer = buffer.audioBufferList.pointee.mBuffers
-        guard let mData = audioBuffer.mData else { return }
-
-        let data = Data(bytes: mData, count: Int(audioBuffer.mDataByteSize))
-        try? session.send(data, toPeers: session.connectedPeers, with: .unreliable)
-    }
-
-    // MARK: - Call Control
-    func callPeer(_ peer: MCPeerID) {
-        print("📤 Calling \(peer.displayName)")
-        browser.invitePeer(peer, to: session, withContext: nil, timeout: 10)
-    }
-
-    func acceptCall() {
-        print("✅ Call accepted")
-        pendingInvitationHandler?(true, session)
-        clearIncomingCall()
-    }
-
-    func rejectCall() {
-        print("❌ Call rejected")
-        pendingInvitationHandler?(false, nil)
-        clearIncomingCall()
-    }
-
-    private func clearIncomingCall() {
-        pendingInvitationHandler = nil
-        incomingPeerName = nil
-        hasIncomingCall = false
-    }
-
-    func endCall() {
-        print("🔴 Ending call")
-        audioEngine.stop()
-        session.disconnect()
-        isConnected = false
-        peerName = nil
-    }
-
-    // MARK: - Multipeer Setup
-    private func setupMultipeer() {
-        session = MCSession(
-            peer: myPeerID,
-            securityIdentity: nil,
-            encryptionPreference: .required
+        let channelDataValue = channelData.pointee
+        let data = Data(
+            bytes: channelDataValue,
+            count: Int(buffer.frameLength) * MemoryLayout<Float>.size
         )
-        session.delegate = self
 
-        advertiser = MCNearbyServiceAdvertiser(
-            peer: myPeerID,
-            discoveryInfo: nil,
-            serviceType: "pttalk"
-        )
-        advertiser.delegate = self
-        advertiser.startAdvertisingPeer()
-
-        browser = MCNearbyServiceBrowser(
-            peer: myPeerID,
-            serviceType: "pttalk"
-        )
-        browser.delegate = self
-        browser.startBrowsingForPeers()
-
-        print("📡 Advertising & browsing started")
+        do {
+            try session.send(data, toPeers: session.connectedPeers, with: .reliable)
+        } catch {
+            print("❌ Failed to send audio:", error)
+        }
     }
 
-    // MARK: - MCSessionDelegate (ALL REQUIRED METHODS)
+    private func playAudioData(_ data: Data) {
+        let format = audioEngine.inputNode.outputFormat(forBus: 0)
 
-    func session(_ session: MCSession,
-                 peer peerID: MCPeerID,
-                 didChange state: MCSessionState) {
+        let frameCount = UInt32(data.count) / format.streamDescription.pointee.mBytesPerFrame
+        guard let buffer = AVAudioPCMBuffer(
+            pcmFormat: format,
+            frameCapacity: frameCount
+        ) else { return }
 
+        buffer.frameLength = frameCount
+
+        data.withUnsafeBytes {
+            memcpy(buffer.floatChannelData![0], $0.baseAddress!, data.count)
+        }
+
+        if !playerNode.isPlaying {
+            playerNode.play()
+        }
+
+        playerNode.scheduleBuffer(buffer, completionHandler: nil)
+    }
+}
+
+// MARK: - MCSessionDelegate
+
+extension CallManager: MCSessionDelegate {
+
+    func session(
+        _ session: MCSession,
+        peer peerID: MCPeerID,
+        didChange state: MCSessionState
+    ) {
         DispatchQueue.main.async {
             switch state {
+
             case .connected:
                 print("✅ CONNECTED to \(peerID.displayName)")
                 self.isConnected = true
                 self.peerName = peerID.displayName
+                self.setupAudioSession()
 
-                // 🔑 START AUDIO ENGINE ONCE
-                if !self.audioEngine.isRunning {
-                    try? self.audioEngine.start()
-                    self.playerNode.play()
-                    print("🎧 Audio Engine Running")
-                }
             case .notConnected:
                 print("❌ DISCONNECTED from \(peerID.displayName)")
                 self.isConnected = false
                 self.peerName = nil
+                self.stopTalking()
 
             case .connecting:
                 print("⏳ CONNECTING to \(peerID.displayName)")
@@ -192,90 +253,80 @@ final class CallManager: NSObject,
         }
     }
 
-    func session(_ session: MCSession,
-                 didReceive data: Data,
-                 fromPeer peerID: MCPeerID) {
-
-        let format = audioEngine.inputNode.outputFormat(forBus: 0)
-        let frameCount = UInt32(data.count) /
-            format.streamDescription.pointee.mBytesPerFrame
-
-        data.withUnsafeBytes { ptr in
-            guard let base = ptr.baseAddress else { return }
-
-            let buffer = AVAudioPCMBuffer(
-                pcmFormat: format,
-                frameCapacity: frameCount
-            )!
-            buffer.frameLength = frameCount
-
-            memcpy(
-                buffer.audioBufferList.pointee.mBuffers.mData,
-                base,
-                data.count
-            )
-
-            playerNode.scheduleBuffer(buffer)
-        }
+    func session(
+        _ session: MCSession,
+        didReceive data: Data,
+        fromPeer peerID: MCPeerID
+    ) {
+        playAudioData(data)
     }
 
-    func session(_ session: MCSession,
-                 didReceive stream: InputStream,
-                 withName streamName: String,
-                 fromPeer peerID: MCPeerID) {}
+    func session(
+        _ session: MCSession,
+        didReceive stream: InputStream,
+        withName streamName: String,
+        fromPeer peerID: MCPeerID
+    ) {}
 
-    func session(_ session: MCSession,
-                 didStartReceivingResourceWithName resourceName: String,
-                 fromPeer peerID: MCPeerID,
-                 with progress: Progress) {}
+    func session(
+        _ session: MCSession,
+        didStartReceivingResourceWithName resourceName: String,
+        fromPeer peerID: MCPeerID,
+        with progress: Progress
+    ) {}
 
-    func session(_ session: MCSession,
-                 didFinishReceivingResourceWithName resourceName: String,
-                 fromPeer peerID: MCPeerID,
-                 at localURL: URL?,
-                 withError error: Error?) {}
+    func session(
+        _ session: MCSession,
+        didFinishReceivingResourceWithName resourceName: String,
+        fromPeer peerID: MCPeerID,
+        at localURL: URL?,
+        withError error: Error?
+    ) {}
+}
 
-    // 🔑 THIS METHOD WAS MISSING (CAUSE OF YOUR ERROR)
-    func session(_ session: MCSession,
-                 didReceiveCertificate certificate: [Any]?,
-                 fromPeer peerID: MCPeerID,
-                 certificateHandler: @escaping (Bool) -> Void) {
-        certificateHandler(true)
-    }
+// MARK: - Advertiser Delegate
 
-    // MARK: - Advertiser (Incoming Call)
-    func advertiser(_ advertiser: MCNearbyServiceAdvertiser,
-                    didReceiveInvitationFromPeer peerID: MCPeerID,
-                    withContext context: Data?,
-                    invitationHandler: @escaping (Bool, MCSession?) -> Void) {
+extension CallManager: MCNearbyServiceAdvertiserDelegate {
 
+    func advertiser(
+        _ advertiser: MCNearbyServiceAdvertiser,
+        didReceiveInvitationFromPeer peerID: MCPeerID,
+        withContext context: Data?,
+        invitationHandler: @escaping (Bool, MCSession?) -> Void
+    ) {
         DispatchQueue.main.async {
             print("📞 Incoming call from \(peerID.displayName)")
             self.incomingPeerName = peerID.displayName
             self.hasIncomingCall = true
-            self.pendingInvitationHandler = invitationHandler
+            self.invitationHandler = invitationHandler
         }
     }
+}
 
-    // MARK: - Browser (Nearby Devices)
-    func browser(_ browser: MCNearbyServiceBrowser,
-                 foundPeer peerID: MCPeerID,
-                 withDiscoveryInfo info: [String : String]?) {
+// MARK: - Browser Delegate
 
+extension CallManager: MCNearbyServiceBrowserDelegate {
+
+    func browser(
+        _ browser: MCNearbyServiceBrowser,
+        foundPeer peerID: MCPeerID,
+        withDiscoveryInfo info: [String : String]?
+    ) {
         DispatchQueue.main.async {
             if !self.nearbyPeers.contains(peerID) {
-                print("🔎 Found peer: \(peerID.displayName)")
+                print("🔎 Found peer:", peerID.displayName)
                 self.nearbyPeers.append(peerID)
             }
         }
     }
 
-    func browser(_ browser: MCNearbyServiceBrowser,
-                 lostPeer peerID: MCPeerID) {
-
+    func browser(
+        _ browser: MCNearbyServiceBrowser,
+        lostPeer peerID: MCPeerID
+    ) {
         DispatchQueue.main.async {
+            print("📴 Lost peer:", peerID.displayName)
             self.nearbyPeers.removeAll { $0 == peerID }
-            print("📴 Lost peer: \(peerID.displayName)")
         }
     }
 }
